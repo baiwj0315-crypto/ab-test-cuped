@@ -1,82 +1,100 @@
-# A/B 实验分析系统 + CUPED 方差缩减
+# A/B 实验分析 + CUPED 方差缩减
 
-完整的 A/B 实验分析流程，包含 AA 验证、假设检验、CUPED 方差缩减和样本量规划，模拟电商推荐算法优化实验场景。
+用**模拟电商 CTR 数据**演示完整 A/B 分析流程：SRM 检查、AA 验证、Welch t-test、CUPED（含 Bootstrap CI）、功效/MDE 样本量规划，以及协变量相关性灵敏度表。
 
-## 业务背景
+> **数据说明**：本仓库数据由 `generate_data.py` 合成，真实处理效应已知（默认 +0.012 CTR）。不是真实公司日志，仅用于方法演示与面试作品展示。
 
-电商 App 测试新版推荐算法是否能提升用户点击率（CTR）。实验组使用新算法，对照组保持旧版，实验周期 7 天，每组 5000 名用户。
+## 要解决什么问题
 
-## 分析流程
+线上做推荐算法实验时，常见痛点是：
 
-### Step 1：AA 验证
-检验实验前两组用户的 CTR 是否无显著差异，确保分流均匀、实验可信。
-- 结果：p=0.551 > 0.05，AA 通过
+1. **分流是否可信**：样本量是否按 1:1、实验前指标是否已有差异（SRM / AA）。
+2. **结论是否稳健**：普通 t-test 在噪声大时置信区间宽、功效不足。
+3. **如何用更少样本做灵敏实验**：用实验前指标做协变量（CUPED）降低方差。
+4. **开跑前如何定规模**：给定 MDE / α / power，需要多少人、跑几天。
 
-### Step 2：标准 t-test
-| 指标 | 对照组 | 实验组 |
-|------|--------|--------|
-| CTR 均值 | 0.1225 | 0.1353 |
-| 绝对提升 | — | +0.0128 |
-| 相对提升 | — | **+10.49%** |
-| p 值 | — | < 0.0001 |
-| 95% CI | — | [0.0110, 0.0147] |
-| Cohen's d | — | 0.275（中效应量）|
+本项目把上述步骤串成可复现的 CLI 脚本，并输出图表。
 
-结论：新推荐算法显著提升 CTR，建议全量上线。
+## 方法概览
 
-### Step 3：CUPED 方差缩减
-CUPED（Controlled-experiment Using Pre-Experiment Data）利用实验前用户 CTR 作为协变量，降低结果噪声，在不增加样本量的前提下提升实验灵敏度。
-
-| 方法 | 方差 | CI 宽度 | p 值 |
-|------|------|---------|------|
-| 标准 t-test | 0.00216 | 0.0037 | <0.0001 |
-| CUPED | 0.00181 | 0.0034 | <0.0001 |
-| 提升 | **-16.2%** | **-8.2%** | — |
-
-### Step 4：样本量规划
-| 最小可检测效果 (MDE) | 单组样本量 | 实验天数（日活5万） |
-|---|---|---|
-| 0.5% | 68,666 | 3 天 |
-| 1.0% | 17,460 | 1 天 |
-| 1.5% | 7,890 | 1 天 |
-| 2.0% | 4,511 | 1 天 |
-
-## 技术栈
-
-| 工具 | 用途 |
-|------|------|
-| Python 3.11 | 主语言 |
-| NumPy / Pandas | 数据处理 |
-| SciPy | 假设检验、功效分析 |
-| Matplotlib | 可视化 |
+| 步骤 | 方法 | 作用 |
+|------|------|------|
+| SRM | χ² goodness-of-fit | 检查 control/treatment 人数是否偏离预期比例 |
+| AA | Welch t-test on `pre_ctr` | 实验前两组应无显著差异 |
+| AB | Welch t-test on `post_ctr` | 估计 uplift、CI、Cohen's d |
+| CUPED | `Y_cuped = Y - θ(X - μ_X)`，θ = Cov(X,Y)/Var(X) | 用 pre 指标缩减方差；另给 **Bootstrap 百分位 CI** |
+| Power | 两比例样本量公式 | 给定 MDE 反推单组 n |
+| Sensitivity | 理论缩减 ≈ ρ² | 不同 pre/post 相关下 CUPED 收益多大 |
 
 ## 项目结构
 
 ```
-ab_test_cuped/
-├── generate_data.py      # 模拟实验数据生成
-├── analysis.py           # 完整分析脚本
+ab-test-cuped/
+├── generate_data.py   # 合成实验 CSV（可调 n / effect / seed）
+├── analysis.py        # CLI 入口：跑完整分析并出图
+├── ab_stats.py        # 统计函数（SRM / AA / t-test / CUPED / power / sensitivity）
+├── ab_viz.py          # 报告图
+├── requirements.txt   # 锁定依赖版本
 ├── data/
-│   └── ab_experiment.csv # 10000 条用户实验数据
+│   └── ab_experiment.csv
 └── output/
-    └── ab_test_report.png # 分析报告图表
+    └── ab_test_report.png
 ```
 
-## 快速运行
+## 环境与运行
+
+需要 Python 3.10+（在 3.13 上验证过）。
 
 ```bash
-pip install pandas numpy scipy matplotlib
-python generate_data.py
-python analysis.py
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+python generate_data.py     # 可选：重新生成模拟数据
+python analysis.py          # 默认读 data/ab_experiment.csv，写出 output/ab_test_report.png
 ```
 
-## 分析结果
+常用参数：
+
+```bash
+python generate_data.py --n 5000 --effect 0.012 --seed 42
+python analysis.py --data data/ab_experiment.csv --bootstrap 5000 --alpha 0.05 --power 0.80
+```
+
+## 样例输出（默认 seed=42，n=5000/臂）
+
+重新跑脚本后数字会以终端为准；以下为一次典型结果的数量级：
+
+| 检查项 | 结果（示例） |
+|--------|----------------|
+| SRM | 5000 : 5000，p ≈ 1.0，通过 |
+| AA (`pre_ctr`) | p > 0.05，通过 |
+| 绝对 uplift | 约 +0.01 量级 |
+| t-test / CUPED | 均显著；CUPED 方差更低、CI 更窄 |
+| Bootstrap CUPED CI | 与正态近似 CI 接近（大样本下） |
+| 方差缩减 | 取决于观测 ρ；理论期望约 ρ² |
+
+报告图：
 
 ![分析报告](output/ab_test_report.png)
 
-## 核心知识点
+## 相对模板多做了什么
 
-- **AA 测试**：实验前验证分流质量，避免辛普森悖论
-- **统计显著 vs 业务显著**：p 值只说明"有差异"，Cohen's d 说明差异"有多大"，两者结合才能做上线决策
-- **CUPED**：大厂实验平台（字节、美团）标配技术，用协变量回归消除用户个体差异带来的噪声，等效于免费增加样本量
-- **样本量规划**：实验开始前必须确定 MDE，避免"看到显著就停"导致的 p-hacking
+1. **SRM 检查**：分流比例异常时先亮红灯，避免盲目解读 uplift。
+2. **CUPED Bootstrap CI**：每次重采样内重估 θ 与全局 pre 均值，反映估计不确定性，而不只信正态近似。
+3. **ρ 灵敏度表 + 图**：说明「协变量相关多高才值得接 CUPED」——ρ=0.5 约减方差 25%，ρ=0.7 约 49%。
+
+## 面试可讲的点
+
+- **统计显著 ≠ 业务显著**：结合 CI、相对提升、Cohen's d 和 MDE 一起决策。
+- **CUPED 不是换指标**：调整后均值差仍估计同一 uplift，方差按 ρ² 缩减（理想情况）。
+- **开跑前定 MDE**：避免 peeking / p-hacking；样本量公式假设与指标分布要匹配业务。
+- **先做 SRM + AA**：工程分流 bug 比「算法没效果」更常见。
+
+## 技术栈
+
+Python · NumPy · Pandas · SciPy · Matplotlib
+
+## License
+
+MIT（演示代码；数据为合成，可自由修改参数重跑）。
